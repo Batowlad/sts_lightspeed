@@ -3,6 +3,7 @@
 //
 
 #include <cassert>
+#include <algorithm>
 
 #include <constants/PlayerStatusEffects.h>
 #include <combat/BattleContext.h>
