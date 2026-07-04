@@ -6,6 +6,7 @@
 
 #include "sim/ConsoleSimulator.h"
 #include "sim/search/ScumSearchAgent2.h"
+#include "sim/search/Action.h"
 #include "sim/SimHelpers.h"
 #include "sim/PrintHelpers.h"
 #include "game/Game.h"
@@ -290,6 +291,78 @@ namespace sts::py {
             }
         }
         return false;
+    }
+
+    std::vector<search::Action> getLegalActions(const BattleContext &bc) {
+        using search::Action;
+        using search::ActionType;
+
+        std::vector<Action> actions;
+        if (bc.outcome != Outcome::UNDECIDED) {
+            return actions;
+        }
+
+        if (bc.inputState == InputState::PLAYER_NORMAL) {
+            // cards - unlike the searcher, enumerates every playable hand index
+            // (no duplicate pruning) so action indices are stable
+            if (bc.isCardPlayAllowed()) {
+                for (int handIdx = 0; handIdx < bc.cards.cardsInHand; ++handIdx) {
+                    const auto &c = bc.cards.hand[handIdx];
+                    if (!c.canUseOnAnyTarget(bc)) {
+                        continue;
+                    }
+                    if (c.requiresTarget()) {
+                        for (int tIdx = 0; tIdx < bc.monsters.monsterCount; ++tIdx) {
+                            if (bc.monsters.arr[tIdx].isTargetable()) {
+                                actions.emplace_back(ActionType::CARD, handIdx, tIdx);
+                            }
+                        }
+                    } else {
+                        actions.emplace_back(ActionType::CARD, handIdx);
+                    }
+                }
+            }
+
+            // potions - target idx of -1 encodes a discard
+            const bool hasValidTarget = bc.monsters.getTargetableCount() > 0;
+            for (int pIdx = 0; pIdx < bc.potionCapacity; ++pIdx) {
+                const auto p = bc.potions[pIdx];
+                if (p == Potion::EMPTY_POTION_SLOT || p == Potion::INVALID) {
+                    continue;
+                }
+
+                if (p == Potion::FAIRY_POTION) { // can only be discarded
+                    actions.emplace_back(ActionType::POTION, pIdx, -1);
+                    continue;
+                }
+
+                if (!potionRequiresTarget(p)) {
+                    actions.emplace_back(ActionType::POTION, pIdx);
+                    continue;
+                }
+
+                if (!hasValidTarget) {
+                    actions.emplace_back(ActionType::POTION, pIdx, -1);
+                    continue;
+                }
+
+                for (int tIdx = 0; tIdx < bc.monsters.monsterCount; ++tIdx) {
+                    if (bc.monsters.arr[tIdx].isTargetable()) {
+                        actions.emplace_back(ActionType::POTION, pIdx, tIdx);
+                    }
+                }
+            }
+
+            actions.emplace_back(ActionType::END_TURN);
+
+        } else if (bc.inputState == InputState::CARD_SELECT) {
+            // note: for EXHAUST_MANY and GAMBLE this only returns the
+            // "select none" action, matching the engine's searcher; richer
+            // selections can be built with Action(MULTI_CARD_SELECT, mask)
+            actions = Action::enumerateCardSelectActions(bc);
+        }
+
+        return actions;
     }
 
 }

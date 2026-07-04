@@ -9,9 +9,12 @@
 
 #include <sstream>
 #include <algorithm>
+#include <stdexcept>
 
 #include "sim/ConsoleSimulator.h"
 #include "sim/search/ScumSearchAgent2.h"
+#include "sim/search/Action.h"
+#include "sim/search/GameAction.h"
 #include "sim/SimHelpers.h"
 #include "sim/PrintHelpers.h"
 #include "game/Game.h"
@@ -69,6 +72,10 @@ PYBIND11_MODULE(slaythespire, m) {
                [] (const GameContext &gc) { return std::vector(gc.relics.relics); },
                "returns a copy of the list of relics"
         )
+        .def_property_readonly("potions",
+               [] (const GameContext &gc) { return std::vector<Potion>(gc.potions.begin(), gc.potions.begin() + gc.potionCapacity); },
+               "returns a copy of the potion slots (up to potion_capacity)"
+        )
         .def("__repr__", [](const GameContext &gc) {
             std::ostringstream oss;
             oss << "<" << gc << ">";
@@ -77,8 +84,11 @@ PYBIND11_MODULE(slaythespire, m) {
 
     gameContext.def_readwrite("outcome", &GameContext::outcome)
         .def_readwrite("act", &GameContext::act)
+        .def_readwrite("ascension", &GameContext::ascension)
         .def_readwrite("floor_num", &GameContext::floorNum)
         .def_readwrite("screen_state", &GameContext::screenState)
+        .def_readwrite("potion_count", &GameContext::potionCount)
+        .def_readwrite("potion_capacity", &GameContext::potionCapacity)
 
         .def_readwrite("seed", &GameContext::seed)
         .def_readwrite("cur_map_node_x", &GameContext::curMapNodeX)
@@ -827,6 +837,842 @@ PYBIND11_MODULE(slaythespire, m) {
         .value("CIRCLET", RelicId::CIRCLET)
         .value("RED_CIRCLET", RelicId::RED_CIRCLET)
         .value("INVALID", RelicId::INVALID);
+
+    // ******************** COMBAT ********************
+
+    m.def("get_legal_actions", &sts::py::getLegalActions,
+          pybind11::arg("bc"), "all actions valid for the current state of a BattleContext");
+
+    pybind11::enum_<search::ActionType>(m, "ActionType")
+        .value("CARD", search::ActionType::CARD)
+        .value("POTION", search::ActionType::POTION)
+        .value("SINGLE_CARD_SELECT", search::ActionType::SINGLE_CARD_SELECT)
+        .value("MULTI_CARD_SELECT", search::ActionType::MULTI_CARD_SELECT)
+        .value("END_TURN", search::ActionType::END_TURN);
+
+    pybind11::enum_<Outcome>(m, "BattleOutcome")
+        .value("UNDECIDED", Outcome::UNDECIDED)
+        .value("PLAYER_VICTORY", Outcome::PLAYER_VICTORY)
+        .value("PLAYER_LOSS", Outcome::PLAYER_LOSS);
+
+    pybind11::enum_<Stance>(m, "Stance")
+        .value("NEUTRAL", Stance::NEUTRAL)
+        .value("CALM", Stance::CALM)
+        .value("WRATH", Stance::WRATH)
+        .value("DIVINITY", Stance::DIVINITY);
+
+    pybind11::enum_<search::GameAction::RewardsActionType>(m, "RewardsActionType")
+        .value("CARD", search::GameAction::RewardsActionType::CARD)
+        .value("GOLD", search::GameAction::RewardsActionType::GOLD)
+        .value("KEY", search::GameAction::RewardsActionType::KEY)
+        .value("POTION", search::GameAction::RewardsActionType::POTION)
+        .value("RELIC", search::GameAction::RewardsActionType::RELIC)
+        .value("CARD_REMOVE", search::GameAction::RewardsActionType::CARD_REMOVE)
+        .value("SKIP", search::GameAction::RewardsActionType::SKIP);
+
+    pybind11::enum_<InputState>(m, "InputState")
+        .value("EXECUTING_ACTIONS", InputState::EXECUTING_ACTIONS)
+        .value("PLAYER_NORMAL", InputState::PLAYER_NORMAL)
+        .value("CARD_SELECT", InputState::CARD_SELECT)
+        .value("CHOOSE_STANCE_ACTION", InputState::CHOOSE_STANCE_ACTION)
+        .value("CHOOSE_TOOLBOX_COLORLESS_CARD", InputState::CHOOSE_TOOLBOX_COLORLESS_CARD)
+        .value("CHOOSE_EXHAUST_POTION_CARDS", InputState::CHOOSE_EXHAUST_POTION_CARDS)
+        .value("CHOOSE_GAMBLING_CARDS", InputState::CHOOSE_GAMBLING_CARDS)
+        .value("CHOOSE_ENTROPIC_BREW_DISCARD_POTIONS", InputState::CHOOSE_ENTROPIC_BREW_DISCARD_POTIONS)
+        .value("CHOOSE_DISCARD_CARDS", InputState::CHOOSE_DISCARD_CARDS)
+        .value("SCRY", InputState::SCRY)
+        .value("SELECT_ENEMY_ACTIONS", InputState::SELECT_ENEMY_ACTIONS)
+        .value("FILL_RANDOM_POTIONS", InputState::FILL_RANDOM_POTIONS)
+        .value("SHUFFLE_INTO_DRAW_BURN", InputState::SHUFFLE_INTO_DRAW_BURN)
+        .value("SHUFFLE_INTO_DRAW_VOID", InputState::SHUFFLE_INTO_DRAW_VOID)
+        .value("SHUFFLE_INTO_DRAW_DAZED", InputState::SHUFFLE_INTO_DRAW_DAZED)
+        .value("SHUFFLE_INTO_DRAW_WOUND", InputState::SHUFFLE_INTO_DRAW_WOUND)
+        .value("SHUFFLE_INTO_DRAW_SLIMED", InputState::SHUFFLE_INTO_DRAW_SLIMED)
+        .value("SHUFFLE_INTO_DRAW_ALL_STATUS", InputState::SHUFFLE_INTO_DRAW_ALL_STATUS)
+        .value("SHUFFLE_CUR_CARD_INTO_DRAW", InputState::SHUFFLE_CUR_CARD_INTO_DRAW)
+        .value("SHUFFLE_DISCARD_TO_DRAW", InputState::SHUFFLE_DISCARD_TO_DRAW)
+        .value("INITIAL_SHUFFLE", InputState::INITIAL_SHUFFLE)
+        .value("CREATE_RANDOM_CARD_IN_HAND_POWER", InputState::CREATE_RANDOM_CARD_IN_HAND_POWER)
+        .value("CREATE_RANDOM_CARD_IN_HAND_COLORLESS", InputState::CREATE_RANDOM_CARD_IN_HAND_COLORLESS)
+        .value("CREATE_RANDOM_CARD_IN_HAND_DEAD_BRANCH", InputState::CREATE_RANDOM_CARD_IN_HAND_DEAD_BRANCH)
+        .value("SELECT_CARD_IN_HAND_EXHAUST", InputState::SELECT_CARD_IN_HAND_EXHAUST)
+        .value("GENERATE_NILRY_CARDS", InputState::GENERATE_NILRY_CARDS)
+        .value("EXHAUST_RANDOM_CARD_IN_HAND", InputState::EXHAUST_RANDOM_CARD_IN_HAND)
+        .value("SELECT_STRANGE_SPOON_PROC", InputState::SELECT_STRANGE_SPOON_PROC)
+        .value("SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON", InputState::SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON)
+        .value("SELECT_WARPED_TONGS_CARD", InputState::SELECT_WARPED_TONGS_CARD)
+        .value("CREATE_ENCHIRIDION_POWER", InputState::CREATE_ENCHIRIDION_POWER)
+        .value("SELECT_CONFUSED_CARD_COST", InputState::SELECT_CONFUSED_CARD_COST);
+
+    pybind11::enum_<CardSelectTask>(m, "CardSelectTask")
+        .value("INVALID", CardSelectTask::INVALID)
+        .value("ARMAMENTS", CardSelectTask::ARMAMENTS)
+        .value("CODEX", CardSelectTask::CODEX)
+        .value("DISCOVERY", CardSelectTask::DISCOVERY)
+        .value("DUAL_WIELD", CardSelectTask::DUAL_WIELD)
+        .value("EXHAUST_ONE", CardSelectTask::EXHAUST_ONE)
+        .value("EXHAUST_MANY", CardSelectTask::EXHAUST_MANY)
+        .value("EXHUME", CardSelectTask::EXHUME)
+        .value("FORETHOUGHT", CardSelectTask::FORETHOUGHT)
+        .value("GAMBLE", CardSelectTask::GAMBLE)
+        .value("HEADBUTT", CardSelectTask::HEADBUTT)
+        .value("HOLOGRAM", CardSelectTask::HOLOGRAM)
+        .value("LIQUID_MEMORIES_POTION", CardSelectTask::LIQUID_MEMORIES_POTION)
+        .value("MEDITATE", CardSelectTask::MEDITATE)
+        .value("NIGHTMARE", CardSelectTask::NIGHTMARE)
+        .value("RECYCLE", CardSelectTask::RECYCLE)
+        .value("SECRET_TECHNIQUE", CardSelectTask::SECRET_TECHNIQUE)
+        .value("SECRET_WEAPON", CardSelectTask::SECRET_WEAPON)
+        .value("SEEK", CardSelectTask::SEEK)
+        .value("SETUP", CardSelectTask::SETUP)
+        .value("WARCRY", CardSelectTask::WARCRY);
+
+    pybind11::enum_<PlayerStatus>(m, "PlayerStatus")
+        .value("INVALID", PlayerStatus::INVALID)
+        .value("DOUBLE_DAMAGE", PlayerStatus::DOUBLE_DAMAGE)
+        .value("DRAW_REDUCTION", PlayerStatus::DRAW_REDUCTION)
+        .value("FRAIL", PlayerStatus::FRAIL)
+        .value("INTANGIBLE", PlayerStatus::INTANGIBLE)
+        .value("VULNERABLE", PlayerStatus::VULNERABLE)
+        .value("WEAK", PlayerStatus::WEAK)
+        .value("BIAS", PlayerStatus::BIAS)
+        .value("CONFUSED", PlayerStatus::CONFUSED)
+        .value("CONSTRICTED", PlayerStatus::CONSTRICTED)
+        .value("ENTANGLED", PlayerStatus::ENTANGLED)
+        .value("FASTING", PlayerStatus::FASTING)
+        .value("HEX", PlayerStatus::HEX)
+        .value("LOSE_DEXTERITY", PlayerStatus::LOSE_DEXTERITY)
+        .value("LOSE_STRENGTH", PlayerStatus::LOSE_STRENGTH)
+        .value("NO_BLOCK", PlayerStatus::NO_BLOCK)
+        .value("NO_DRAW", PlayerStatus::NO_DRAW)
+        .value("WRAITH_FORM", PlayerStatus::WRAITH_FORM)
+        .value("BARRICADE", PlayerStatus::BARRICADE)
+        .value("BLASPHEMER", PlayerStatus::BLASPHEMER)
+        .value("CORRUPTION", PlayerStatus::CORRUPTION)
+        .value("ELECTRO", PlayerStatus::ELECTRO)
+        .value("SURROUNDED", PlayerStatus::SURROUNDED)
+        .value("MASTER_REALITY", PlayerStatus::MASTER_REALITY)
+        .value("PEN_NIB", PlayerStatus::PEN_NIB)
+        .value("WRATH_NEXT_TURN", PlayerStatus::WRATH_NEXT_TURN)
+        .value("AMPLIFY", PlayerStatus::AMPLIFY)
+        .value("BLUR", PlayerStatus::BLUR)
+        .value("BUFFER", PlayerStatus::BUFFER)
+        .value("COLLECT", PlayerStatus::COLLECT)
+        .value("DOUBLE_TAP", PlayerStatus::DOUBLE_TAP)
+        .value("DUPLICATION", PlayerStatus::DUPLICATION)
+        .value("ECHO_FORM", PlayerStatus::ECHO_FORM)
+        .value("FREE_ATTACK_POWER", PlayerStatus::FREE_ATTACK_POWER)
+        .value("REBOUND", PlayerStatus::REBOUND)
+        .value("MANTRA", PlayerStatus::MANTRA)
+        .value("ACCURACY", PlayerStatus::ACCURACY)
+        .value("AFTER_IMAGE", PlayerStatus::AFTER_IMAGE)
+        .value("BATTLE_HYMN", PlayerStatus::BATTLE_HYMN)
+        .value("BRUTALITY", PlayerStatus::BRUTALITY)
+        .value("BURST", PlayerStatus::BURST)
+        .value("COMBUST", PlayerStatus::COMBUST)
+        .value("CREATIVE_AI", PlayerStatus::CREATIVE_AI)
+        .value("DARK_EMBRACE", PlayerStatus::DARK_EMBRACE)
+        .value("DEMON_FORM", PlayerStatus::DEMON_FORM)
+        .value("DEVA", PlayerStatus::DEVA)
+        .value("DEVOTION", PlayerStatus::DEVOTION)
+        .value("DRAW_CARD_NEXT_TURN", PlayerStatus::DRAW_CARD_NEXT_TURN)
+        .value("ENERGIZED", PlayerStatus::ENERGIZED)
+        .value("ENVENOM", PlayerStatus::ENVENOM)
+        .value("ESTABLISHMENT", PlayerStatus::ESTABLISHMENT)
+        .value("EVOLVE", PlayerStatus::EVOLVE)
+        .value("FEEL_NO_PAIN", PlayerStatus::FEEL_NO_PAIN)
+        .value("FIRE_BREATHING", PlayerStatus::FIRE_BREATHING)
+        .value("FLAME_BARRIER", PlayerStatus::FLAME_BARRIER)
+        .value("FOCUS", PlayerStatus::FOCUS)
+        .value("FORESIGHT", PlayerStatus::FORESIGHT)
+        .value("HELLO_WORLD", PlayerStatus::HELLO_WORLD)
+        .value("INFINITE_BLADES", PlayerStatus::INFINITE_BLADES)
+        .value("JUGGERNAUT", PlayerStatus::JUGGERNAUT)
+        .value("LIKE_WATER", PlayerStatus::LIKE_WATER)
+        .value("LOOP", PlayerStatus::LOOP)
+        .value("MAGNETISM", PlayerStatus::MAGNETISM)
+        .value("MAYHEM", PlayerStatus::MAYHEM)
+        .value("METALLICIZE", PlayerStatus::METALLICIZE)
+        .value("NEXT_TURN_BLOCK", PlayerStatus::NEXT_TURN_BLOCK)
+        .value("NOXIOUS_FUMES", PlayerStatus::NOXIOUS_FUMES)
+        .value("OMEGA", PlayerStatus::OMEGA)
+        .value("PANACHE", PlayerStatus::PANACHE)
+        .value("PHANTASMAL", PlayerStatus::PHANTASMAL)
+        .value("PLATED_ARMOR", PlayerStatus::PLATED_ARMOR)
+        .value("RAGE", PlayerStatus::RAGE)
+        .value("REGEN", PlayerStatus::REGEN)
+        .value("RITUAL", PlayerStatus::RITUAL)
+        .value("RUPTURE", PlayerStatus::RUPTURE)
+        .value("SADISTIC", PlayerStatus::SADISTIC)
+        .value("STATIC_DISCHARGE", PlayerStatus::STATIC_DISCHARGE)
+        .value("THORNS", PlayerStatus::THORNS)
+        .value("THOUSAND_CUTS", PlayerStatus::THOUSAND_CUTS)
+        .value("TOOLS_OF_THE_TRADE", PlayerStatus::TOOLS_OF_THE_TRADE)
+        .value("VIGOR", PlayerStatus::VIGOR)
+        .value("WAVE_OF_THE_HAND", PlayerStatus::WAVE_OF_THE_HAND)
+        .value("EQUILIBRIUM", PlayerStatus::EQUILIBRIUM)
+        .value("ARTIFACT", PlayerStatus::ARTIFACT)
+        .value("DEXTERITY", PlayerStatus::DEXTERITY)
+        .value("STRENGTH", PlayerStatus::STRENGTH)
+        .value("THE_BOMB", PlayerStatus::THE_BOMB);
+
+    pybind11::enum_<MonsterStatus>(m, "MonsterStatus")
+        .value("ARTIFACT", MonsterStatus::ARTIFACT)
+        .value("BLOCK_RETURN", MonsterStatus::BLOCK_RETURN)
+        .value("CHOKED", MonsterStatus::CHOKED)
+        .value("CORPSE_EXPLOSION", MonsterStatus::CORPSE_EXPLOSION)
+        .value("LOCK_ON", MonsterStatus::LOCK_ON)
+        .value("MARK", MonsterStatus::MARK)
+        .value("METALLICIZE", MonsterStatus::METALLICIZE)
+        .value("PLATED_ARMOR", MonsterStatus::PLATED_ARMOR)
+        .value("POISON", MonsterStatus::POISON)
+        .value("REGEN", MonsterStatus::REGEN)
+        .value("SHACKLED", MonsterStatus::SHACKLED)
+        .value("STRENGTH", MonsterStatus::STRENGTH)
+        .value("VULNERABLE", MonsterStatus::VULNERABLE)
+        .value("WEAK", MonsterStatus::WEAK)
+        .value("ANGRY", MonsterStatus::ANGRY)
+        .value("BEAT_OF_DEATH", MonsterStatus::BEAT_OF_DEATH)
+        .value("CURIOSITY", MonsterStatus::CURIOSITY)
+        .value("CURL_UP", MonsterStatus::CURL_UP)
+        .value("ENRAGE", MonsterStatus::ENRAGE)
+        .value("FADING", MonsterStatus::FADING)
+        .value("FLIGHT", MonsterStatus::FLIGHT)
+        .value("GENERIC_STRENGTH_UP", MonsterStatus::GENERIC_STRENGTH_UP)
+        .value("INTANGIBLE", MonsterStatus::INTANGIBLE)
+        .value("MALLEABLE", MonsterStatus::MALLEABLE)
+        .value("MODE_SHIFT", MonsterStatus::MODE_SHIFT)
+        .value("RITUAL", MonsterStatus::RITUAL)
+        .value("SLOW", MonsterStatus::SLOW)
+        .value("SPORE_CLOUD", MonsterStatus::SPORE_CLOUD)
+        .value("THIEVERY", MonsterStatus::THIEVERY)
+        .value("THORNS", MonsterStatus::THORNS)
+        .value("TIME_WARP", MonsterStatus::TIME_WARP)
+        .value("INVINCIBLE", MonsterStatus::INVINCIBLE)
+        .value("REACTIVE", MonsterStatus::REACTIVE)
+        .value("SHARP_HIDE", MonsterStatus::SHARP_HIDE)
+        .value("ASLEEP", MonsterStatus::ASLEEP)
+        .value("BARRICADE", MonsterStatus::BARRICADE)
+        .value("MINION", MonsterStatus::MINION)
+        .value("MINION_LEADER", MonsterStatus::MINION_LEADER)
+        .value("PAINFUL_STABS", MonsterStatus::PAINFUL_STABS)
+        .value("REGROW", MonsterStatus::REGROW)
+        .value("SHIFTING", MonsterStatus::SHIFTING)
+        .value("STASIS", MonsterStatus::STASIS)
+        .value("INVALID", MonsterStatus::INVALID);
+
+    pybind11::enum_<MonsterId>(m, "MonsterId")
+        .value("INVALID", MonsterId::INVALID)
+        .value("ACID_SLIME_L", MonsterId::ACID_SLIME_L)
+        .value("ACID_SLIME_M", MonsterId::ACID_SLIME_M)
+        .value("ACID_SLIME_S", MonsterId::ACID_SLIME_S)
+        .value("AWAKENED_ONE", MonsterId::AWAKENED_ONE)
+        .value("BEAR", MonsterId::BEAR)
+        .value("BLUE_SLAVER", MonsterId::BLUE_SLAVER)
+        .value("BOOK_OF_STABBING", MonsterId::BOOK_OF_STABBING)
+        .value("BRONZE_AUTOMATON", MonsterId::BRONZE_AUTOMATON)
+        .value("BRONZE_ORB", MonsterId::BRONZE_ORB)
+        .value("BYRD", MonsterId::BYRD)
+        .value("CENTURION", MonsterId::CENTURION)
+        .value("CHOSEN", MonsterId::CHOSEN)
+        .value("CORRUPT_HEART", MonsterId::CORRUPT_HEART)
+        .value("CULTIST", MonsterId::CULTIST)
+        .value("DAGGER", MonsterId::DAGGER)
+        .value("DARKLING", MonsterId::DARKLING)
+        .value("DECA", MonsterId::DECA)
+        .value("DONU", MonsterId::DONU)
+        .value("EXPLODER", MonsterId::EXPLODER)
+        .value("FAT_GREMLIN", MonsterId::FAT_GREMLIN)
+        .value("FUNGI_BEAST", MonsterId::FUNGI_BEAST)
+        .value("GIANT_HEAD", MonsterId::GIANT_HEAD)
+        .value("GREEN_LOUSE", MonsterId::GREEN_LOUSE)
+        .value("GREMLIN_LEADER", MonsterId::GREMLIN_LEADER)
+        .value("GREMLIN_NOB", MonsterId::GREMLIN_NOB)
+        .value("GREMLIN_WIZARD", MonsterId::GREMLIN_WIZARD)
+        .value("HEXAGHOST", MonsterId::HEXAGHOST)
+        .value("JAW_WORM", MonsterId::JAW_WORM)
+        .value("LAGAVULIN", MonsterId::LAGAVULIN)
+        .value("LOOTER", MonsterId::LOOTER)
+        .value("MAD_GREMLIN", MonsterId::MAD_GREMLIN)
+        .value("MUGGER", MonsterId::MUGGER)
+        .value("MYSTIC", MonsterId::MYSTIC)
+        .value("NEMESIS", MonsterId::NEMESIS)
+        .value("ORB_WALKER", MonsterId::ORB_WALKER)
+        .value("POINTY", MonsterId::POINTY)
+        .value("RED_LOUSE", MonsterId::RED_LOUSE)
+        .value("RED_SLAVER", MonsterId::RED_SLAVER)
+        .value("REPTOMANCER", MonsterId::REPTOMANCER)
+        .value("REPULSOR", MonsterId::REPULSOR)
+        .value("ROMEO", MonsterId::ROMEO)
+        .value("SENTRY", MonsterId::SENTRY)
+        .value("SHELLED_PARASITE", MonsterId::SHELLED_PARASITE)
+        .value("SHIELD_GREMLIN", MonsterId::SHIELD_GREMLIN)
+        .value("SLIME_BOSS", MonsterId::SLIME_BOSS)
+        .value("SNAKE_PLANT", MonsterId::SNAKE_PLANT)
+        .value("SNEAKY_GREMLIN", MonsterId::SNEAKY_GREMLIN)
+        .value("SNECKO", MonsterId::SNECKO)
+        .value("SPHERIC_GUARDIAN", MonsterId::SPHERIC_GUARDIAN)
+        .value("SPIKER", MonsterId::SPIKER)
+        .value("SPIKE_SLIME_L", MonsterId::SPIKE_SLIME_L)
+        .value("SPIKE_SLIME_M", MonsterId::SPIKE_SLIME_M)
+        .value("SPIKE_SLIME_S", MonsterId::SPIKE_SLIME_S)
+        .value("SPIRE_GROWTH", MonsterId::SPIRE_GROWTH)
+        .value("SPIRE_SHIELD", MonsterId::SPIRE_SHIELD)
+        .value("SPIRE_SPEAR", MonsterId::SPIRE_SPEAR)
+        .value("TASKMASTER", MonsterId::TASKMASTER)
+        .value("THE_CHAMP", MonsterId::THE_CHAMP)
+        .value("THE_COLLECTOR", MonsterId::THE_COLLECTOR)
+        .value("THE_GUARDIAN", MonsterId::THE_GUARDIAN)
+        .value("THE_MAW", MonsterId::THE_MAW)
+        .value("TIME_EATER", MonsterId::TIME_EATER)
+        .value("TORCH_HEAD", MonsterId::TORCH_HEAD)
+        .value("TRANSIENT", MonsterId::TRANSIENT)
+        .value("WRITHING_MASS", MonsterId::WRITHING_MASS);
+
+    pybind11::enum_<MonsterMoveId>(m, "MonsterMoveId")
+        .value("INVALID", MonsterMoveId::INVALID)
+        .value("GENERIC_ESCAPE_MOVE", MonsterMoveId::GENERIC_ESCAPE_MOVE)
+        .value("ACID_SLIME_L_CORROSIVE_SPIT", MonsterMoveId::ACID_SLIME_L_CORROSIVE_SPIT)
+        .value("ACID_SLIME_L_LICK", MonsterMoveId::ACID_SLIME_L_LICK)
+        .value("ACID_SLIME_L_TACKLE", MonsterMoveId::ACID_SLIME_L_TACKLE)
+        .value("ACID_SLIME_L_SPLIT", MonsterMoveId::ACID_SLIME_L_SPLIT)
+        .value("ACID_SLIME_M_CORROSIVE_SPIT", MonsterMoveId::ACID_SLIME_M_CORROSIVE_SPIT)
+        .value("ACID_SLIME_M_LICK", MonsterMoveId::ACID_SLIME_M_LICK)
+        .value("ACID_SLIME_M_TACKLE", MonsterMoveId::ACID_SLIME_M_TACKLE)
+        .value("ACID_SLIME_S_LICK", MonsterMoveId::ACID_SLIME_S_LICK)
+        .value("ACID_SLIME_S_TACKLE", MonsterMoveId::ACID_SLIME_S_TACKLE)
+        .value("AWAKENED_ONE_SLASH", MonsterMoveId::AWAKENED_ONE_SLASH)
+        .value("AWAKENED_ONE_SOUL_STRIKE", MonsterMoveId::AWAKENED_ONE_SOUL_STRIKE)
+        .value("AWAKENED_ONE_REBIRTH", MonsterMoveId::AWAKENED_ONE_REBIRTH)
+        .value("AWAKENED_ONE_DARK_ECHO", MonsterMoveId::AWAKENED_ONE_DARK_ECHO)
+        .value("AWAKENED_ONE_SLUDGE", MonsterMoveId::AWAKENED_ONE_SLUDGE)
+        .value("AWAKENED_ONE_TACKLE", MonsterMoveId::AWAKENED_ONE_TACKLE)
+        .value("BEAR_BEAR_HUG", MonsterMoveId::BEAR_BEAR_HUG)
+        .value("BEAR_LUNGE", MonsterMoveId::BEAR_LUNGE)
+        .value("BEAR_MAUL", MonsterMoveId::BEAR_MAUL)
+        .value("BLUE_SLAVER_STAB", MonsterMoveId::BLUE_SLAVER_STAB)
+        .value("BLUE_SLAVER_RAKE", MonsterMoveId::BLUE_SLAVER_RAKE)
+        .value("BOOK_OF_STABBING_MULTI_STAB", MonsterMoveId::BOOK_OF_STABBING_MULTI_STAB)
+        .value("BOOK_OF_STABBING_SINGLE_STAB", MonsterMoveId::BOOK_OF_STABBING_SINGLE_STAB)
+        .value("BRONZE_AUTOMATON_BOOST", MonsterMoveId::BRONZE_AUTOMATON_BOOST)
+        .value("BRONZE_AUTOMATON_FLAIL", MonsterMoveId::BRONZE_AUTOMATON_FLAIL)
+        .value("BRONZE_AUTOMATON_HYPER_BEAM", MonsterMoveId::BRONZE_AUTOMATON_HYPER_BEAM)
+        .value("BRONZE_AUTOMATON_SPAWN_ORBS", MonsterMoveId::BRONZE_AUTOMATON_SPAWN_ORBS)
+        .value("BRONZE_AUTOMATON_STUNNED", MonsterMoveId::BRONZE_AUTOMATON_STUNNED)
+        .value("BRONZE_ORB_BEAM", MonsterMoveId::BRONZE_ORB_BEAM)
+        .value("BRONZE_ORB_STASIS", MonsterMoveId::BRONZE_ORB_STASIS)
+        .value("BRONZE_ORB_SUPPORT_BEAM", MonsterMoveId::BRONZE_ORB_SUPPORT_BEAM)
+        .value("BYRD_CAW", MonsterMoveId::BYRD_CAW)
+        .value("BYRD_FLY", MonsterMoveId::BYRD_FLY)
+        .value("BYRD_HEADBUTT", MonsterMoveId::BYRD_HEADBUTT)
+        .value("BYRD_PECK", MonsterMoveId::BYRD_PECK)
+        .value("BYRD_STUNNED", MonsterMoveId::BYRD_STUNNED)
+        .value("BYRD_SWOOP", MonsterMoveId::BYRD_SWOOP)
+        .value("CENTURION_SLASH", MonsterMoveId::CENTURION_SLASH)
+        .value("CENTURION_FURY", MonsterMoveId::CENTURION_FURY)
+        .value("CENTURION_DEFEND", MonsterMoveId::CENTURION_DEFEND)
+        .value("CHOSEN_POKE", MonsterMoveId::CHOSEN_POKE)
+        .value("CHOSEN_ZAP", MonsterMoveId::CHOSEN_ZAP)
+        .value("CHOSEN_DEBILITATE", MonsterMoveId::CHOSEN_DEBILITATE)
+        .value("CHOSEN_DRAIN", MonsterMoveId::CHOSEN_DRAIN)
+        .value("CHOSEN_HEX", MonsterMoveId::CHOSEN_HEX)
+        .value("CORRUPT_HEART_DEBILITATE", MonsterMoveId::CORRUPT_HEART_DEBILITATE)
+        .value("CORRUPT_HEART_BLOOD_SHOTS", MonsterMoveId::CORRUPT_HEART_BLOOD_SHOTS)
+        .value("CORRUPT_HEART_ECHO", MonsterMoveId::CORRUPT_HEART_ECHO)
+        .value("CORRUPT_HEART_BUFF", MonsterMoveId::CORRUPT_HEART_BUFF)
+        .value("CULTIST_INCANTATION", MonsterMoveId::CULTIST_INCANTATION)
+        .value("CULTIST_DARK_STRIKE", MonsterMoveId::CULTIST_DARK_STRIKE)
+        .value("DAGGER_STAB", MonsterMoveId::DAGGER_STAB)
+        .value("DAGGER_EXPLODE", MonsterMoveId::DAGGER_EXPLODE)
+        .value("DARKLING_NIP", MonsterMoveId::DARKLING_NIP)
+        .value("DARKLING_CHOMP", MonsterMoveId::DARKLING_CHOMP)
+        .value("DARKLING_HARDEN", MonsterMoveId::DARKLING_HARDEN)
+        .value("DARKLING_REINCARNATE", MonsterMoveId::DARKLING_REINCARNATE)
+        .value("DARKLING_REGROW", MonsterMoveId::DARKLING_REGROW)
+        .value("DECA_SQUARE_OF_PROTECTION", MonsterMoveId::DECA_SQUARE_OF_PROTECTION)
+        .value("DECA_BEAM", MonsterMoveId::DECA_BEAM)
+        .value("DONU_CIRCLE_OF_POWER", MonsterMoveId::DONU_CIRCLE_OF_POWER)
+        .value("DONU_BEAM", MonsterMoveId::DONU_BEAM)
+        .value("EXPLODER_SLAM", MonsterMoveId::EXPLODER_SLAM)
+        .value("EXPLODER_EXPLODE", MonsterMoveId::EXPLODER_EXPLODE)
+        .value("FAT_GREMLIN_SMASH", MonsterMoveId::FAT_GREMLIN_SMASH)
+        .value("FUNGI_BEAST_BITE", MonsterMoveId::FUNGI_BEAST_BITE)
+        .value("FUNGI_BEAST_GROW", MonsterMoveId::FUNGI_BEAST_GROW)
+        .value("GIANT_HEAD_COUNT", MonsterMoveId::GIANT_HEAD_COUNT)
+        .value("GIANT_HEAD_GLARE", MonsterMoveId::GIANT_HEAD_GLARE)
+        .value("GIANT_HEAD_IT_IS_TIME", MonsterMoveId::GIANT_HEAD_IT_IS_TIME)
+        .value("GREEN_LOUSE_BITE", MonsterMoveId::GREEN_LOUSE_BITE)
+        .value("GREEN_LOUSE_SPIT_WEB", MonsterMoveId::GREEN_LOUSE_SPIT_WEB)
+        .value("GREMLIN_LEADER_ENCOURAGE", MonsterMoveId::GREMLIN_LEADER_ENCOURAGE)
+        .value("GREMLIN_LEADER_RALLY", MonsterMoveId::GREMLIN_LEADER_RALLY)
+        .value("GREMLIN_LEADER_STAB", MonsterMoveId::GREMLIN_LEADER_STAB)
+        .value("GREMLIN_NOB_BELLOW", MonsterMoveId::GREMLIN_NOB_BELLOW)
+        .value("GREMLIN_NOB_RUSH", MonsterMoveId::GREMLIN_NOB_RUSH)
+        .value("GREMLIN_NOB_SKULL_BASH", MonsterMoveId::GREMLIN_NOB_SKULL_BASH)
+        .value("GREMLIN_WIZARD_CHARGING", MonsterMoveId::GREMLIN_WIZARD_CHARGING)
+        .value("GREMLIN_WIZARD_ULTIMATE_BLAST", MonsterMoveId::GREMLIN_WIZARD_ULTIMATE_BLAST)
+        .value("HEXAGHOST_ACTIVATE", MonsterMoveId::HEXAGHOST_ACTIVATE)
+        .value("HEXAGHOST_DIVIDER", MonsterMoveId::HEXAGHOST_DIVIDER)
+        .value("HEXAGHOST_INFERNO", MonsterMoveId::HEXAGHOST_INFERNO)
+        .value("HEXAGHOST_SEAR", MonsterMoveId::HEXAGHOST_SEAR)
+        .value("HEXAGHOST_TACKLE", MonsterMoveId::HEXAGHOST_TACKLE)
+        .value("HEXAGHOST_INFLAME", MonsterMoveId::HEXAGHOST_INFLAME)
+        .value("JAW_WORM_CHOMP", MonsterMoveId::JAW_WORM_CHOMP)
+        .value("JAW_WORM_THRASH", MonsterMoveId::JAW_WORM_THRASH)
+        .value("JAW_WORM_BELLOW", MonsterMoveId::JAW_WORM_BELLOW)
+        .value("LAGAVULIN_ATTACK", MonsterMoveId::LAGAVULIN_ATTACK)
+        .value("LAGAVULIN_SIPHON_SOUL", MonsterMoveId::LAGAVULIN_SIPHON_SOUL)
+        .value("LAGAVULIN_SLEEP", MonsterMoveId::LAGAVULIN_SLEEP)
+        .value("LOOTER_MUG", MonsterMoveId::LOOTER_MUG)
+        .value("LOOTER_LUNGE", MonsterMoveId::LOOTER_LUNGE)
+        .value("LOOTER_SMOKE_BOMB", MonsterMoveId::LOOTER_SMOKE_BOMB)
+        .value("LOOTER_ESCAPE", MonsterMoveId::LOOTER_ESCAPE)
+        .value("MAD_GREMLIN_SCRATCH", MonsterMoveId::MAD_GREMLIN_SCRATCH)
+        .value("MUGGER_MUG", MonsterMoveId::MUGGER_MUG)
+        .value("MUGGER_LUNGE", MonsterMoveId::MUGGER_LUNGE)
+        .value("MUGGER_SMOKE_BOMB", MonsterMoveId::MUGGER_SMOKE_BOMB)
+        .value("MUGGER_ESCAPE", MonsterMoveId::MUGGER_ESCAPE)
+        .value("MYSTIC_HEAL", MonsterMoveId::MYSTIC_HEAL)
+        .value("MYSTIC_BUFF", MonsterMoveId::MYSTIC_BUFF)
+        .value("MYSTIC_ATTACK_DEBUFF", MonsterMoveId::MYSTIC_ATTACK_DEBUFF)
+        .value("NEMESIS_DEBUFF", MonsterMoveId::NEMESIS_DEBUFF)
+        .value("NEMESIS_ATTACK", MonsterMoveId::NEMESIS_ATTACK)
+        .value("NEMESIS_SCYTHE", MonsterMoveId::NEMESIS_SCYTHE)
+        .value("ORB_WALKER_LASER", MonsterMoveId::ORB_WALKER_LASER)
+        .value("ORB_WALKER_CLAW", MonsterMoveId::ORB_WALKER_CLAW)
+        .value("POINTY_ATTACK", MonsterMoveId::POINTY_ATTACK)
+        .value("RED_LOUSE_BITE", MonsterMoveId::RED_LOUSE_BITE)
+        .value("RED_LOUSE_GROW", MonsterMoveId::RED_LOUSE_GROW)
+        .value("RED_SLAVER_STAB", MonsterMoveId::RED_SLAVER_STAB)
+        .value("RED_SLAVER_SCRAPE", MonsterMoveId::RED_SLAVER_SCRAPE)
+        .value("RED_SLAVER_ENTANGLE", MonsterMoveId::RED_SLAVER_ENTANGLE)
+        .value("REPTOMANCER_SUMMON", MonsterMoveId::REPTOMANCER_SUMMON)
+        .value("REPTOMANCER_SNAKE_STRIKE", MonsterMoveId::REPTOMANCER_SNAKE_STRIKE)
+        .value("REPTOMANCER_BIG_BITE", MonsterMoveId::REPTOMANCER_BIG_BITE)
+        .value("REPULSOR_BASH", MonsterMoveId::REPULSOR_BASH)
+        .value("REPULSOR_REPULSE", MonsterMoveId::REPULSOR_REPULSE)
+        .value("ROMEO_MOCK", MonsterMoveId::ROMEO_MOCK)
+        .value("ROMEO_AGONIZING_SLASH", MonsterMoveId::ROMEO_AGONIZING_SLASH)
+        .value("ROMEO_CROSS_SLASH", MonsterMoveId::ROMEO_CROSS_SLASH)
+        .value("SENTRY_BEAM", MonsterMoveId::SENTRY_BEAM)
+        .value("SENTRY_BOLT", MonsterMoveId::SENTRY_BOLT)
+        .value("SHELLED_PARASITE_DOUBLE_STRIKE", MonsterMoveId::SHELLED_PARASITE_DOUBLE_STRIKE)
+        .value("SHELLED_PARASITE_FELL", MonsterMoveId::SHELLED_PARASITE_FELL)
+        .value("SHELLED_PARASITE_STUNNED", MonsterMoveId::SHELLED_PARASITE_STUNNED)
+        .value("SHELLED_PARASITE_SUCK", MonsterMoveId::SHELLED_PARASITE_SUCK)
+        .value("SHIELD_GREMLIN_PROTECT", MonsterMoveId::SHIELD_GREMLIN_PROTECT)
+        .value("SHIELD_GREMLIN_SHIELD_BASH", MonsterMoveId::SHIELD_GREMLIN_SHIELD_BASH)
+        .value("SLIME_BOSS_GOOP_SPRAY", MonsterMoveId::SLIME_BOSS_GOOP_SPRAY)
+        .value("SLIME_BOSS_PREPARING", MonsterMoveId::SLIME_BOSS_PREPARING)
+        .value("SLIME_BOSS_SLAM", MonsterMoveId::SLIME_BOSS_SLAM)
+        .value("SLIME_BOSS_SPLIT", MonsterMoveId::SLIME_BOSS_SPLIT)
+        .value("SNAKE_PLANT_CHOMP", MonsterMoveId::SNAKE_PLANT_CHOMP)
+        .value("SNAKE_PLANT_ENFEEBLING_SPORES", MonsterMoveId::SNAKE_PLANT_ENFEEBLING_SPORES)
+        .value("SNEAKY_GREMLIN_PUNCTURE", MonsterMoveId::SNEAKY_GREMLIN_PUNCTURE)
+        .value("SNECKO_PERPLEXING_GLARE", MonsterMoveId::SNECKO_PERPLEXING_GLARE)
+        .value("SNECKO_TAIL_WHIP", MonsterMoveId::SNECKO_TAIL_WHIP)
+        .value("SNECKO_BITE", MonsterMoveId::SNECKO_BITE)
+        .value("SPHERIC_GUARDIAN_SLAM", MonsterMoveId::SPHERIC_GUARDIAN_SLAM)
+        .value("SPHERIC_GUARDIAN_ACTIVATE", MonsterMoveId::SPHERIC_GUARDIAN_ACTIVATE)
+        .value("SPHERIC_GUARDIAN_HARDEN", MonsterMoveId::SPHERIC_GUARDIAN_HARDEN)
+        .value("SPHERIC_GUARDIAN_ATTACK_DEBUFF", MonsterMoveId::SPHERIC_GUARDIAN_ATTACK_DEBUFF)
+        .value("SPIKER_CUT", MonsterMoveId::SPIKER_CUT)
+        .value("SPIKER_SPIKE", MonsterMoveId::SPIKER_SPIKE)
+        .value("SPIKE_SLIME_L_FLAME_TACKLE", MonsterMoveId::SPIKE_SLIME_L_FLAME_TACKLE)
+        .value("SPIKE_SLIME_L_LICK", MonsterMoveId::SPIKE_SLIME_L_LICK)
+        .value("SPIKE_SLIME_L_SPLIT", MonsterMoveId::SPIKE_SLIME_L_SPLIT)
+        .value("SPIKE_SLIME_M_FLAME_TACKLE", MonsterMoveId::SPIKE_SLIME_M_FLAME_TACKLE)
+        .value("SPIKE_SLIME_M_LICK", MonsterMoveId::SPIKE_SLIME_M_LICK)
+        .value("SPIKE_SLIME_S_TACKLE", MonsterMoveId::SPIKE_SLIME_S_TACKLE)
+        .value("SPIRE_GROWTH_QUICK_TACKLE", MonsterMoveId::SPIRE_GROWTH_QUICK_TACKLE)
+        .value("SPIRE_GROWTH_SMASH", MonsterMoveId::SPIRE_GROWTH_SMASH)
+        .value("SPIRE_GROWTH_CONSTRICT", MonsterMoveId::SPIRE_GROWTH_CONSTRICT)
+        .value("SPIRE_SHIELD_BASH", MonsterMoveId::SPIRE_SHIELD_BASH)
+        .value("SPIRE_SHIELD_FORTIFY", MonsterMoveId::SPIRE_SHIELD_FORTIFY)
+        .value("SPIRE_SHIELD_SMASH", MonsterMoveId::SPIRE_SHIELD_SMASH)
+        .value("SPIRE_SPEAR_BURN_STRIKE", MonsterMoveId::SPIRE_SPEAR_BURN_STRIKE)
+        .value("SPIRE_SPEAR_PIERCER", MonsterMoveId::SPIRE_SPEAR_PIERCER)
+        .value("SPIRE_SPEAR_SKEWER", MonsterMoveId::SPIRE_SPEAR_SKEWER)
+        .value("TASKMASTER_SCOURING_WHIP", MonsterMoveId::TASKMASTER_SCOURING_WHIP)
+        .value("TORCH_HEAD_TACKLE", MonsterMoveId::TORCH_HEAD_TACKLE)
+        .value("THE_CHAMP_DEFENSIVE_STANCE", MonsterMoveId::THE_CHAMP_DEFENSIVE_STANCE)
+        .value("THE_CHAMP_FACE_SLAP", MonsterMoveId::THE_CHAMP_FACE_SLAP)
+        .value("THE_CHAMP_TAUNT", MonsterMoveId::THE_CHAMP_TAUNT)
+        .value("THE_CHAMP_HEAVY_SLASH", MonsterMoveId::THE_CHAMP_HEAVY_SLASH)
+        .value("THE_CHAMP_GLOAT", MonsterMoveId::THE_CHAMP_GLOAT)
+        .value("THE_CHAMP_EXECUTE", MonsterMoveId::THE_CHAMP_EXECUTE)
+        .value("THE_CHAMP_ANGER", MonsterMoveId::THE_CHAMP_ANGER)
+        .value("THE_COLLECTOR_BUFF", MonsterMoveId::THE_COLLECTOR_BUFF)
+        .value("THE_COLLECTOR_FIREBALL", MonsterMoveId::THE_COLLECTOR_FIREBALL)
+        .value("THE_COLLECTOR_MEGA_DEBUFF", MonsterMoveId::THE_COLLECTOR_MEGA_DEBUFF)
+        .value("THE_COLLECTOR_SPAWN", MonsterMoveId::THE_COLLECTOR_SPAWN)
+        .value("THE_GUARDIAN_CHARGING_UP", MonsterMoveId::THE_GUARDIAN_CHARGING_UP)
+        .value("THE_GUARDIAN_FIERCE_BASH", MonsterMoveId::THE_GUARDIAN_FIERCE_BASH)
+        .value("THE_GUARDIAN_VENT_STEAM", MonsterMoveId::THE_GUARDIAN_VENT_STEAM)
+        .value("THE_GUARDIAN_WHIRLWIND", MonsterMoveId::THE_GUARDIAN_WHIRLWIND)
+        .value("THE_GUARDIAN_DEFENSIVE_MODE", MonsterMoveId::THE_GUARDIAN_DEFENSIVE_MODE)
+        .value("THE_GUARDIAN_ROLL_ATTACK", MonsterMoveId::THE_GUARDIAN_ROLL_ATTACK)
+        .value("THE_GUARDIAN_TWIN_SLAM", MonsterMoveId::THE_GUARDIAN_TWIN_SLAM)
+        .value("THE_MAW_ROAR", MonsterMoveId::THE_MAW_ROAR)
+        .value("THE_MAW_DROOL", MonsterMoveId::THE_MAW_DROOL)
+        .value("THE_MAW_SLAM", MonsterMoveId::THE_MAW_SLAM)
+        .value("THE_MAW_NOM", MonsterMoveId::THE_MAW_NOM)
+        .value("TIME_EATER_REVERBERATE", MonsterMoveId::TIME_EATER_REVERBERATE)
+        .value("TIME_EATER_HEAD_SLAM", MonsterMoveId::TIME_EATER_HEAD_SLAM)
+        .value("TIME_EATER_RIPPLE", MonsterMoveId::TIME_EATER_RIPPLE)
+        .value("TIME_EATER_HASTE", MonsterMoveId::TIME_EATER_HASTE)
+        .value("TRANSIENT_ATTACK", MonsterMoveId::TRANSIENT_ATTACK)
+        .value("WRITHING_MASS_IMPLANT", MonsterMoveId::WRITHING_MASS_IMPLANT)
+        .value("WRITHING_MASS_FLAIL", MonsterMoveId::WRITHING_MASS_FLAIL)
+        .value("WRITHING_MASS_WITHER", MonsterMoveId::WRITHING_MASS_WITHER)
+        .value("WRITHING_MASS_MULTI_STRIKE", MonsterMoveId::WRITHING_MASS_MULTI_STRIKE)
+        .value("WRITHING_MASS_STRONG_STRIKE", MonsterMoveId::WRITHING_MASS_STRONG_STRIKE);
+
+    pybind11::enum_<Potion>(m, "Potion")
+        .value("INVALID", Potion::INVALID)
+        .value("EMPTY_POTION_SLOT", Potion::EMPTY_POTION_SLOT)
+        .value("AMBROSIA", Potion::AMBROSIA)
+        .value("ANCIENT_POTION", Potion::ANCIENT_POTION)
+        .value("ATTACK_POTION", Potion::ATTACK_POTION)
+        .value("BLESSING_OF_THE_FORGE", Potion::BLESSING_OF_THE_FORGE)
+        .value("BLOCK_POTION", Potion::BLOCK_POTION)
+        .value("BLOOD_POTION", Potion::BLOOD_POTION)
+        .value("BOTTLED_MIRACLE", Potion::BOTTLED_MIRACLE)
+        .value("COLORLESS_POTION", Potion::COLORLESS_POTION)
+        .value("CULTIST_POTION", Potion::CULTIST_POTION)
+        .value("CUNNING_POTION", Potion::CUNNING_POTION)
+        .value("DEXTERITY_POTION", Potion::DEXTERITY_POTION)
+        .value("DISTILLED_CHAOS", Potion::DISTILLED_CHAOS)
+        .value("DUPLICATION_POTION", Potion::DUPLICATION_POTION)
+        .value("ELIXIR_POTION", Potion::ELIXIR_POTION)
+        .value("ENERGY_POTION", Potion::ENERGY_POTION)
+        .value("ENTROPIC_BREW", Potion::ENTROPIC_BREW)
+        .value("ESSENCE_OF_DARKNESS", Potion::ESSENCE_OF_DARKNESS)
+        .value("ESSENCE_OF_STEEL", Potion::ESSENCE_OF_STEEL)
+        .value("EXPLOSIVE_POTION", Potion::EXPLOSIVE_POTION)
+        .value("FAIRY_POTION", Potion::FAIRY_POTION)
+        .value("FEAR_POTION", Potion::FEAR_POTION)
+        .value("FIRE_POTION", Potion::FIRE_POTION)
+        .value("FLEX_POTION", Potion::FLEX_POTION)
+        .value("FOCUS_POTION", Potion::FOCUS_POTION)
+        .value("FRUIT_JUICE", Potion::FRUIT_JUICE)
+        .value("GAMBLERS_BREW", Potion::GAMBLERS_BREW)
+        .value("GHOST_IN_A_JAR", Potion::GHOST_IN_A_JAR)
+        .value("HEART_OF_IRON", Potion::HEART_OF_IRON)
+        .value("LIQUID_BRONZE", Potion::LIQUID_BRONZE)
+        .value("LIQUID_MEMORIES", Potion::LIQUID_MEMORIES)
+        .value("POISON_POTION", Potion::POISON_POTION)
+        .value("POTION_OF_CAPACITY", Potion::POTION_OF_CAPACITY)
+        .value("POWER_POTION", Potion::POWER_POTION)
+        .value("REGEN_POTION", Potion::REGEN_POTION)
+        .value("SKILL_POTION", Potion::SKILL_POTION)
+        .value("SMOKE_BOMB", Potion::SMOKE_BOMB)
+        .value("SNECKO_OIL", Potion::SNECKO_OIL)
+        .value("SPEED_POTION", Potion::SPEED_POTION)
+        .value("STANCE_POTION", Potion::STANCE_POTION)
+        .value("STRENGTH_POTION", Potion::STRENGTH_POTION)
+        .value("SWIFT_POTION", Potion::SWIFT_POTION)
+        .value("WEAK_POTION", Potion::WEAK_POTION);
+
+    pybind11::class_<search::Action> action(m, "Action");
+    action.def(pybind11::init<search::ActionType>(), pybind11::arg("action_type"))
+        .def(pybind11::init<search::ActionType, int>(), pybind11::arg("action_type"), pybind11::arg("idx1"))
+        .def(pybind11::init<search::ActionType, int, int>(), pybind11::arg("action_type"), pybind11::arg("idx1"), pybind11::arg("idx2"))
+        .def_static("from_bits", [](std::uint32_t bits) { return search::Action(bits); }, pybind11::arg("bits"))
+        .def_readonly("bits", &search::Action::bits)
+        .def_property_readonly("action_type", &search::Action::getActionType)
+        .def_property_readonly("source_idx", &search::Action::getSourceIdx, "hand idx for CARD actions, potion slot for POTION actions")
+        .def_property_readonly("target_idx", &search::Action::getTargetIdx, "monster target idx; for POTION actions a value > 5 means discard")
+        .def_property_readonly("select_idx", &search::Action::getSelectIdx, "chosen idx for SINGLE_CARD_SELECT actions")
+        .def_property_readonly("selected_idxs", [](const search::Action &a) {
+            const auto idxs = a.getSelectedIdxs();
+            return std::vector<int>(idxs.begin(), idxs.end());
+        }, "chosen idxs for MULTI_CARD_SELECT actions")
+        .def("is_valid", &search::Action::isValidAction, pybind11::arg("bc"),
+             "whether this action is legal for the current state of the battle")
+        .def("execute", [](const search::Action &a, BattleContext &bc) {
+            if (!a.isValidAction(bc)) {
+                std::ostringstream oss;
+                oss << "action is not valid in the current battle state: ";
+                a.printDesc(oss, bc);
+                throw std::invalid_argument(oss.str());
+            }
+            a.execute(bc);
+        }, pybind11::arg("bc"), "apply the action to the battle and run the engine until the next decision point")
+        .def("describe", [](const search::Action &a, const BattleContext &bc) {
+            std::ostringstream oss;
+            a.printDesc(oss, bc);
+            return oss.str();
+        }, pybind11::arg("bc"), "human readable description of the action in the context of a battle")
+        .def("__eq__", [](const search::Action &a, const search::Action &rhs) { return a == rhs; }, pybind11::is_operator())
+        .def("__ne__", [](const search::Action &a, const search::Action &rhs) { return a != rhs; }, pybind11::is_operator())
+        .def("__hash__", [](const search::Action &a) { return static_cast<std::size_t>(a.bits); })
+        .def("__repr__", [](const search::Action &a) {
+            static constexpr const char* names[] {"CARD", "POTION", "SINGLE_CARD_SELECT", "MULTI_CARD_SELECT", "END_TURN"};
+            const auto t = static_cast<int>(a.getActionType());
+            std::ostringstream oss;
+            oss << "<slaythespire.Action " << (t >= 0 && t <= 4 ? names[t] : "INVALID");
+            switch (a.getActionType()) {
+                case search::ActionType::CARD:
+                case search::ActionType::POTION:
+                    oss << " source_idx=" << a.getSourceIdx() << " target_idx=" << a.getTargetIdx();
+                    break;
+                case search::ActionType::SINGLE_CARD_SELECT:
+                    oss << " select_idx=" << a.getSelectIdx();
+                    break;
+                case search::ActionType::MULTI_CARD_SELECT: {
+                    oss << " selected_idxs=[";
+                    const auto idxs = a.getSelectedIdxs();
+                    for (int i = 0; i < idxs.size(); ++i) {
+                        oss << idxs[i] << (i + 1 < idxs.size() ? "," : "");
+                    }
+                    oss << "]";
+                    break;
+                }
+                default:
+                    break;
+            }
+            oss << ">";
+            return oss.str();
+        });
+
+    pybind11::class_<BattleContext> battleContext(m, "BattleContext");
+    battleContext.def(pybind11::init<>())
+        .def(pybind11::init<const BattleContext&>(), pybind11::arg("other"), "copy a battle state, e.g. for python-side rollouts")
+        .def("init", [](BattleContext &bc, const GameContext &gc) {
+            if (gc.screenState != ScreenState::BATTLE) {
+                throw std::invalid_argument("GameContext is not in a battle (screen_state must be ScreenState.BATTLE)");
+            }
+            bc.init(gc);
+        }, pybind11::arg("gc"), "initialize combat from a GameContext that is on the BATTLE screen")
+        .def("init", [](BattleContext &bc, const GameContext &gc, MonsterEncounter encounter) {
+            bc.init(gc, encounter);
+        }, pybind11::arg("gc"), pybind11::arg("encounter"), "initialize combat against an explicit encounter (deck/relics/hp/rng come from gc)")
+        .def("exit_battle", [](const BattleContext &bc, GameContext &gc) {
+            if (bc.outcome == Outcome::UNDECIDED) {
+                throw std::invalid_argument("cannot exit_battle while outcome is UNDECIDED");
+            }
+            bc.exitBattle(gc);
+        }, pybind11::arg("gc"), "write combat results back to the GameContext; continues the run on victory, sets gc.outcome to PLAYER_LOSS on defeat")
+        .def("legal_actions", &sts::py::getLegalActions, "all actions valid for the current input state")
+        .def_readonly("outcome", &BattleContext::outcome)
+        .def_readonly("input_state", &BattleContext::inputState)
+        .def_readonly("turn", &BattleContext::turn)
+        .def_readonly("is_battle_over", &BattleContext::isBattleOver)
+        .def_readonly("encounter", &BattleContext::encounter)
+        .def_readonly("ascension", &BattleContext::ascension)
+        .def_readonly("seed", &BattleContext::seed)
+        .def_readonly("floor_num", &BattleContext::floorNum)
+        .def_readonly("player", &BattleContext::player)
+        .def_readonly("monsters", &BattleContext::monsters)
+        .def_readonly("cards", &BattleContext::cards)
+        .def_readonly("card_select_info", &BattleContext::cardSelectInfo, "describes what a CARD_SELECT input state is asking for")
+        .def_readonly("potion_count", &BattleContext::potionCount)
+        .def_readonly("potion_capacity", &BattleContext::potionCapacity)
+        .def_property_readonly("potions", [](const BattleContext &bc) {
+            return std::vector<Potion>(bc.potions.begin(), bc.potions.begin() + bc.potionCapacity);
+        }, "copy of the potion slots (up to potion_capacity)")
+        .def("__copy__", [](const BattleContext &bc) { return BattleContext(bc); })
+        .def("__deepcopy__", [](const BattleContext &bc, const pybind11::dict &) { return BattleContext(bc); }, pybind11::arg("memo"))
+        .def("__repr__", [](const BattleContext &bc) {
+            std::ostringstream oss;
+            oss << bc;
+            return oss.str();
+        });
+
+    pybind11::class_<search::GameAction> gameAction(m, "GameAction");
+    gameAction.def(pybind11::init<int, int>(), pybind11::arg("idx1"), pybind11::arg("idx2") = 0)
+        .def(pybind11::init<search::GameAction::RewardsActionType, int, int>(),
+             pybind11::arg("rewards_type"), pybind11::arg("idx1") = 0, pybind11::arg("idx2") = 0)
+        .def_static("from_bits", [](std::uint32_t bits) { return search::GameAction(bits); }, pybind11::arg("bits"))
+        .def_static("get_all_actions_in_state", &search::GameAction::getAllActionsInState, pybind11::arg("gc"),
+                    "all valid out-of-combat actions; empty when gc is in a battle (use BattleContext) or the game has ended")
+        .def_readonly("bits", &search::GameAction::bits)
+        .def_property_readonly("idx1", &search::GameAction::getIdx1)
+        .def_property_readonly("idx2", &search::GameAction::getIdx2)
+        .def_property_readonly("idx3", &search::GameAction::getIdx3)
+        .def_property_readonly("rewards_action_type", &search::GameAction::getRewardsActionType, "only meaningful on the REWARDS screen")
+        .def_property_readonly("is_potion_action", &search::GameAction::isPotionAction)
+        .def_property_readonly("is_potion_discard", &search::GameAction::isPotionDiscard)
+        .def("is_valid", &search::GameAction::isValidAction, pybind11::arg("gc"),
+             "whether this action is legal for the current state of the game")
+        .def("execute", [](const search::GameAction &a, GameContext &gc) {
+            if (!a.isValidAction(gc)) {
+                std::ostringstream oss;
+                oss << "game action is not valid in the current game state";
+                throw std::invalid_argument(oss.str());
+            }
+            a.execute(gc);
+        }, pybind11::arg("gc"), "apply the action to the game")
+        .def("describe", [](const search::GameAction &a, const GameContext &gc) {
+            std::ostringstream oss;
+            a.printDesc(oss, gc);
+            return oss.str();
+        }, pybind11::arg("gc"), "human readable description of the action in the context of a game")
+        .def("__eq__", [](const search::GameAction &a, const search::GameAction &rhs) { return a.bits == rhs.bits; }, pybind11::is_operator())
+        .def("__ne__", [](const search::GameAction &a, const search::GameAction &rhs) { return a.bits != rhs.bits; }, pybind11::is_operator())
+        .def("__hash__", [](const search::GameAction &a) { return static_cast<std::size_t>(a.bits); })
+        .def("__repr__", [](const search::GameAction &a) {
+            std::ostringstream oss;
+            oss << "<slaythespire.GameAction idx1=" << a.getIdx1()
+                << " idx2=" << a.getIdx2() << " idx3=" << a.getIdx3()
+                << " bits=0x" << std::hex << a.bits << ">";
+            return oss.str();
+        });
+
+    pybind11::class_<Player> player(m, "Player");
+    player.def_readonly("character_class", &Player::cc)
+        .def_readonly("gold", &Player::gold)
+        .def_readonly("cur_hp", &Player::curHp)
+        .def_readonly("max_hp", &Player::maxHp)
+        .def_readonly("energy", &Player::energy)
+        .def_readonly("energy_per_turn", &Player::energyPerTurn)
+        .def_readonly("card_draw_per_turn", &Player::cardDrawPerTurn)
+        .def_readonly("stance", &Player::stance)
+        .def_readonly("orb_slots", &Player::orbSlots)
+        .def_readonly("block", &Player::block)
+        .def_readonly("artifact", &Player::artifact)
+        .def_readonly("dexterity", &Player::dexterity)
+        .def_readonly("focus", &Player::focus)
+        .def_readonly("strength", &Player::strength)
+        .def_readonly("cards_played_this_turn", &Player::cardsPlayedThisTurn)
+        .def_readonly("attacks_played_this_turn", &Player::attacksPlayedThisTurn)
+        .def_readonly("skills_played_this_turn", &Player::skillsPlayedThisTurn)
+        .def_readonly("cards_discarded_this_turn", &Player::cardsDiscardedThisTurn)
+        .def_readonly("happy_flower_counter", &Player::happyFlowerCounter)
+        .def_readonly("incense_burner_counter", &Player::incenseBurnerCounter)
+        .def_readonly("ink_bottle_counter", &Player::inkBottleCounter)
+        .def_readonly("inserter_counter", &Player::inserterCounter)
+        .def_readonly("nunchaku_counter", &Player::nunchakuCounter)
+        .def_readonly("pen_nib_counter", &Player::penNibCounter)
+        .def_readonly("sundial_counter", &Player::sundialCounter)
+        .def_readonly("combust_hp_loss", &Player::combustHpLoss)
+        .def("has_status", &Player::hasStatusRuntime, pybind11::arg("status"))
+        .def("get_status", &Player::getStatusRuntime, pybind11::arg("status"))
+        .def("has_relic", &Player::hasRelicRuntime, pybind11::arg("relic"))
+        .def("__repr__", [](const Player &p) {
+            std::ostringstream oss;
+            oss << p;
+            return oss.str();
+        });
+
+    pybind11::class_<DamageInfo> damageInfo(m, "DamageInfo");
+    damageInfo.def_readonly("damage", &DamageInfo::damage)
+        .def_readonly("attack_count", &DamageInfo::attackCount)
+        .def("__repr__", [](const DamageInfo &d) {
+            std::ostringstream oss;
+            oss << "<slaythespire.DamageInfo " << d.damage << "x" << d.attackCount << ">";
+            return oss.str();
+        });
+
+    pybind11::class_<Monster> monster(m, "Monster");
+    monster.def_readonly("idx", &Monster::idx)
+        .def_readonly("id", &Monster::id)
+        .def_readonly("cur_hp", &Monster::curHp)
+        .def_readonly("max_hp", &Monster::maxHp)
+        .def_readonly("block", &Monster::block)
+        .def_readonly("strength", &Monster::strength)
+        .def_readonly("misc_info", &Monster::miscInfo, "monster-specific state, e.g. hexaghost orb count, champ phase, louse bite damage")
+        .def_property_readonly("name", &Monster::getName)
+        .def_property_readonly("move_id", [](const Monster &monster) { return monster.moveHistory[0]; },
+                               "the monster's current move (its intent)")
+        .def_property_readonly("last_move_id", [](const Monster &monster) { return monster.moveHistory[1]; })
+        .def_property_readonly("is_alive", &Monster::isAlive)
+        .def_property_readonly("is_targetable", &Monster::isTargetable)
+        .def_property_readonly("is_dying", &Monster::isDying)
+        .def_property_readonly("is_escaping", &Monster::isEscaping)
+        .def_property_readonly("is_dead_or_escaped", &Monster::isDeadOrEscaped)
+        .def_property_readonly("is_half_dead", &Monster::isHalfDead)
+        .def_property_readonly("does_escape_next", &Monster::doesEscapeNext)
+        .def_property_readonly("is_attacking", &Monster::isAttacking)
+        .def("has_status", &Monster::hasStatusInternal, pybind11::arg("status"))
+        .def("get_status", &Monster::getStatusInternal, pybind11::arg("status"))
+        .def("get_move_base_damage", &Monster::getMoveBaseDamage, pybind11::arg("bc"),
+             "base damage and hit count of the monster's current move")
+        .def("calculate_damage_to_player", &Monster::calculateDamageToPlayer, pybind11::arg("bc"), pybind11::arg("base_damage"),
+             "damage the player would take after strength/weak/vulnerable/block-independent modifiers")
+        .def("__repr__", [](const Monster &monster) {
+            std::ostringstream oss;
+            oss << monster;
+            return oss.str();
+        });
+
+    pybind11::class_<MonsterGroup> monsterGroup(m, "MonsterGroup");
+    monsterGroup.def_readonly("monster_count", &MonsterGroup::monsterCount)
+        .def_readonly("monsters_alive", &MonsterGroup::monstersAlive)
+        .def_property_readonly("targetable_count", &MonsterGroup::getTargetableCount)
+        .def_property_readonly("first_targetable_idx", &MonsterGroup::getFirstTargetable)
+        .def_property_readonly("are_monsters_basically_dead", &MonsterGroup::areMonstersBasicallyDead)
+        .def("__len__", [](const MonsterGroup &g) { return g.monsterCount; })
+        .def("__getitem__", [](const MonsterGroup &g, int i) -> const Monster & {
+            if (i < 0 || i >= g.monsterCount) {
+                throw pybind11::index_error("monster index out of range");
+            }
+            return g.arr[i];
+        }, pybind11::return_value_policy::reference_internal)
+        .def("__repr__", [](const MonsterGroup &g) {
+            std::ostringstream oss;
+            oss << g;
+            return oss.str();
+        });
+
+    pybind11::class_<CardInstance> cardInstance(m, "CardInstance");
+    cardInstance.def(pybind11::init<CardId, bool>(), pybind11::arg("id"), pybind11::arg("upgraded") = false)
+        .def_property_readonly("id", &CardInstance::getId)
+        .def_property_readonly("type", &CardInstance::getType)
+        .def_property_readonly("name", &CardInstance::getName)
+        .def_readonly("unique_id", &CardInstance::uniqueId)
+        .def_readonly("special_data", &CardInstance::specialData, "per-card combat state, e.g. ritual dagger damage")
+        .def_readonly("cost", &CardInstance::cost)
+        .def_readonly("cost_for_turn", &CardInstance::costForTurn)
+        .def_readonly("free_to_play_once", &CardInstance::freeToPlayOnce)
+        .def_readonly("retain", &CardInstance::retain)
+        .def_property_readonly("upgraded", &CardInstance::isUpgraded)
+        .def_property_readonly("upgrade_count", &CardInstance::getUpgradeCount)
+        .def_property_readonly("upgradable", &CardInstance::canUpgrade)
+        .def_property_readonly("is_ethereal", &CardInstance::isEthereal)
+        .def_property_readonly("is_strike_card", &CardInstance::isStrikeCard)
+        .def_property_readonly("does_exhaust", &CardInstance::doesExhaust)
+        .def_property_readonly("has_self_retain", &CardInstance::hasSelfRetain)
+        .def_property_readonly("requires_target", &CardInstance::requiresTarget)
+        .def_property_readonly("is_x_cost", &CardInstance::isXCost)
+        .def("is_free_to_play", &CardInstance::isFreeToPlay, pybind11::arg("bc"))
+        .def("can_use", &CardInstance::canUse, pybind11::arg("bc"), pybind11::arg("target"), pybind11::arg("in_autoplay") = false)
+        .def("can_use_on_any_target", &CardInstance::canUseOnAnyTarget, pybind11::arg("bc"))
+        .def("__repr__", [](const CardInstance &c) {
+            std::ostringstream oss;
+            oss << "<slaythespire.CardInstance " << c << ">";
+            return oss.str();
+        });
+
+    pybind11::class_<CardManager> cardManager(m, "CardManager");
+    cardManager.def_readonly("cards_in_hand", &CardManager::cardsInHand)
+        .def_property_readonly("hand", [](const CardManager &c) {
+            return std::vector<CardInstance>(c.hand.begin(), c.hand.begin() + c.cardsInHand);
+        }, "copy of the cards in hand")
+        .def_property_readonly("draw_pile", [](const CardManager &c) {
+            return std::vector<CardInstance>(c.drawPile.begin(), c.drawPile.end());
+        }, "copy of the draw pile")
+        .def_property_readonly("discard_pile", [](const CardManager &c) {
+            return std::vector<CardInstance>(c.discardPile.begin(), c.discardPile.end());
+        }, "copy of the discard pile")
+        .def_property_readonly("exhaust_pile", [](const CardManager &c) {
+            return std::vector<CardInstance>(c.exhaustPile.begin(), c.exhaustPile.end());
+        }, "copy of the exhaust pile")
+        .def("__repr__", [](const CardManager &c) {
+            std::ostringstream oss;
+            oss << c;
+            return oss.str();
+        });
+
+    pybind11::class_<CardSelectInfo> cardSelectInfoClass(m, "CardSelectInfo");
+    cardSelectInfoClass.def_readonly("task", &CardSelectInfo::cardSelectTask)
+        .def_readonly("can_pick_zero", &CardSelectInfo::canPickZero)
+        .def_readonly("can_pick_any_number", &CardSelectInfo::canPickAnyNumber)
+        .def_readonly("pick_count", &CardSelectInfo::pickCount)
+        .def_property_readonly("cards", [](const CardSelectInfo &info) {
+            return std::vector<CardId>(info.cards.begin(), info.cards.end());
+        }, "the offered cards for DISCOVERY/CODEX tasks");
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);

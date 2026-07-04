@@ -44,6 +44,11 @@ namespace sts {
 
     class GameContext;
     class Map;
+    struct BattleContext;
+
+    namespace search {
+        struct Action;
+    }
 
     namespace py {
 
@@ -61,6 +66,11 @@ namespace sts {
         std::vector<int> getNNMapRepresentation(const Map &map);
         Room getRoomType(const Map &map, int x, int y);
         bool hasEdge(const Map &map, int x, int y, int x2);
+
+        // all actions valid for the current BattleContext input state
+        // (mirrors BattleScumSearcher2's private enumerators, minus the
+        //  expert play-ordering and duplicate-card pruning)
+        std::vector<search::Action> getLegalActions(const BattleContext &bc);
     }
 
 
