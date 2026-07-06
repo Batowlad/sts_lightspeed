@@ -94,7 +94,44 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("cur_map_node_x", &GameContext::curMapNodeX)
         .def_readwrite("cur_map_node_y", &GameContext::curMapNodeY)
         .def_readwrite("cur_room", &GameContext::curRoom)
-//        .def_readwrite("cur_event", &GameContext::curEvent) // todo standardize event names
+        .def_readwrite("cur_event", &GameContext::curEvent)
+        .def_property_readonly("cur_event_name",
+            [](const GameContext &gc) { return std::string(eventGameNames[static_cast<int>(gc.curEvent)]); },
+            "in-game display name of the current event, e.g. 'Big Fish'"
+        )
+        .def_property_readonly("event_data",
+            [](const GameContext &gc) { return gc.info.eventData; },
+            "phase/progress counter used by multi-phase events (Cursed Tome, Scrap Ooze, Colosseum)"
+        )
+        .def_property_readonly("event_info",
+            [](const GameContext &gc) {
+                pybind11::dict d;
+                d["event_data"] = gc.info.eventData;
+                d["hp_amount0"] = gc.info.hpAmount0;
+                d["hp_amount1"] = gc.info.hpAmount1;
+                d["hp_amount2"] = gc.info.hpAmount2;
+                d["phase"] = gc.info.phase;
+                d["gold_loss"] = gc.info.goldLoss;
+                d["gold"] = gc.info.gold;
+                d["potion_idx"] = gc.info.potionIdx;
+                d["card_idx"] = gc.info.cardIdx;
+                d["relic_idx0"] = gc.info.relicIdx0;
+                d["relic_idx1"] = gc.info.relicIdx1;
+                d["upgrade_one"] = gc.info.upgradeOne;
+                d["clean_up_is_remove_card"] = gc.info.cleanUpIsRemoveCard;
+                d["skill_card_deck_idx"] = gc.info.skillCardDeckIdx;
+                d["power_card_deck_idx"] = gc.info.powerCardDeckIdx;
+                d["attack_card_deck_idx"] = gc.info.attackCardDeckIdx;
+                return d;
+            },
+            "raw per-event state fields; only the fields the current event uses are meaningful"
+        )
+        .def_property_readonly("neow_rewards",
+            [](const GameContext &gc) {
+                return std::vector<Neow::Option>(gc.info.neowRewards.begin(), gc.info.neowRewards.end());
+            },
+            "the four Neow options; only meaningful while the NEOW event screen is active"
+        )
         .def_readwrite("boss", &GameContext::boss)
 
         .def_readwrite("cur_hp", &GameContext::curHp)
@@ -190,6 +227,118 @@ PYBIND11_MODULE(slaythespire, m) {
         .value("BOSS_TREASURE", Room::BOSS_TREASURE)
         .value("NONE", Room::NONE)
         .value("INVALID", Room::INVALID);
+
+    pybind11::enum_<Event> eventEnum(m, "Event");
+    eventEnum.value("INVALID", Event::INVALID)
+        .value("MONSTER", Event::MONSTER)
+        .value("REST", Event::REST)
+        .value("SHOP", Event::SHOP)
+        .value("TREASURE", Event::TREASURE)
+        .value("NEOW", Event::NEOW)
+        .value("OMINOUS_FORGE", Event::OMINOUS_FORGE)
+        .value("PLEADING_VAGRANT", Event::PLEADING_VAGRANT)
+        .value("ANCIENT_WRITING", Event::ANCIENT_WRITING)
+        .value("OLD_BEGGAR", Event::OLD_BEGGAR)
+        .value("BIG_FISH", Event::BIG_FISH)
+        .value("BONFIRE_SPIRITS", Event::BONFIRE_SPIRITS)
+        .value("COLOSSEUM", Event::COLOSSEUM)
+        .value("CURSED_TOME", Event::CURSED_TOME)
+        .value("DEAD_ADVENTURER", Event::DEAD_ADVENTURER)
+        .value("DESIGNER_IN_SPIRE", Event::DESIGNER_IN_SPIRE)
+        .value("AUGMENTER", Event::AUGMENTER)
+        .value("DUPLICATOR", Event::DUPLICATOR)
+        .value("FACE_TRADER", Event::FACE_TRADER)
+        .value("FALLING", Event::FALLING)
+        .value("FORGOTTEN_ALTAR", Event::FORGOTTEN_ALTAR)
+        .value("THE_DIVINE_FOUNTAIN", Event::THE_DIVINE_FOUNTAIN)
+        .value("GHOSTS", Event::GHOSTS)
+        .value("GOLDEN_IDOL", Event::GOLDEN_IDOL)
+        .value("GOLDEN_SHRINE", Event::GOLDEN_SHRINE)
+        .value("WING_STATUE", Event::WING_STATUE)
+        .value("KNOWING_SKULL", Event::KNOWING_SKULL)
+        .value("LAB", Event::LAB)
+        .value("THE_SSSSSERPENT", Event::THE_SSSSSERPENT)
+        .value("LIVING_WALL", Event::LIVING_WALL)
+        .value("MASKED_BANDITS", Event::MASKED_BANDITS)
+        .value("MATCH_AND_KEEP", Event::MATCH_AND_KEEP)
+        .value("MINDBLOOM", Event::MINDBLOOM)
+        .value("HYPNOTIZING_COLORED_MUSHROOMS", Event::HYPNOTIZING_COLORED_MUSHROOMS)
+        .value("MYSTERIOUS_SPHERE", Event::MYSTERIOUS_SPHERE)
+        .value("THE_NEST", Event::THE_NEST)
+        .value("NLOTH", Event::NLOTH)
+        .value("NOTE_FOR_YOURSELF", Event::NOTE_FOR_YOURSELF)
+        .value("PURIFIER", Event::PURIFIER)
+        .value("SCRAP_OOZE", Event::SCRAP_OOZE)
+        .value("SECRET_PORTAL", Event::SECRET_PORTAL)
+        .value("SENSORY_STONE", Event::SENSORY_STONE)
+        .value("SHINING_LIGHT", Event::SHINING_LIGHT)
+        .value("THE_CLERIC", Event::THE_CLERIC)
+        .value("THE_JOUST", Event::THE_JOUST)
+        .value("THE_LIBRARY", Event::THE_LIBRARY)
+        .value("THE_MAUSOLEUM", Event::THE_MAUSOLEUM)
+        .value("THE_MOAI_HEAD", Event::THE_MOAI_HEAD)
+        .value("THE_WOMAN_IN_BLUE", Event::THE_WOMAN_IN_BLUE)
+        .value("TOMB_OF_LORD_RED_MASK", Event::TOMB_OF_LORD_RED_MASK)
+        .value("TRANSMORGRIFIER", Event::TRANSMORGRIFIER)
+        .value("UPGRADE_SHRINE", Event::UPGRADE_SHRINE)
+        .value("VAMPIRES", Event::VAMPIRES)
+        .value("WE_MEET_AGAIN", Event::WE_MEET_AGAIN)
+        .value("WHEEL_OF_CHANGE", Event::WHEEL_OF_CHANGE)
+        .value("WINDING_HALLS", Event::WINDING_HALLS)
+        .value("WORLD_OF_GOOP", Event::WORLD_OF_GOOP);
+
+    m.def("event_game_name",
+        [](Event e) { return std::string(eventGameNames[static_cast<int>(e)]); },
+        "in-game display name of an Event, e.g. 'Hypnotizing Colored Mushrooms'");
+
+    pybind11::enum_<Neow::Bonus>(m, "NeowBonus")
+        .value("THREE_CARDS", Neow::Bonus::THREE_CARDS)
+        .value("ONE_RANDOM_RARE_CARD", Neow::Bonus::ONE_RANDOM_RARE_CARD)
+        .value("REMOVE_CARD", Neow::Bonus::REMOVE_CARD)
+        .value("UPGRADE_CARD", Neow::Bonus::UPGRADE_CARD)
+        .value("TRANSFORM_CARD", Neow::Bonus::TRANSFORM_CARD)
+        .value("RANDOM_COLORLESS", Neow::Bonus::RANDOM_COLORLESS)
+        .value("THREE_SMALL_POTIONS", Neow::Bonus::THREE_SMALL_POTIONS)
+        .value("RANDOM_COMMON_RELIC", Neow::Bonus::RANDOM_COMMON_RELIC)
+        .value("TEN_PERCENT_HP_BONUS", Neow::Bonus::TEN_PERCENT_HP_BONUS)
+        .value("THREE_ENEMY_KILL", Neow::Bonus::THREE_ENEMY_KILL)
+        .value("HUNDRED_GOLD", Neow::Bonus::HUNDRED_GOLD)
+        .value("RANDOM_COLORLESS_2", Neow::Bonus::RANDOM_COLORLESS_2)
+        .value("REMOVE_TWO", Neow::Bonus::REMOVE_TWO)
+        .value("ONE_RARE_RELIC", Neow::Bonus::ONE_RARE_RELIC)
+        .value("THREE_RARE_CARDS", Neow::Bonus::THREE_RARE_CARDS)
+        .value("TWO_FIFTY_GOLD", Neow::Bonus::TWO_FIFTY_GOLD)
+        .value("TRANSFORM_TWO_CARDS", Neow::Bonus::TRANSFORM_TWO_CARDS)
+        .value("TWENTY_PERCENT_HP_BONUS", Neow::Bonus::TWENTY_PERCENT_HP_BONUS)
+        .value("BOSS_RELIC", Neow::Bonus::BOSS_RELIC)
+        .value("INVALID", Neow::Bonus::INVALID);
+
+    pybind11::enum_<Neow::Drawback>(m, "NeowDrawback")
+        .value("INVALID", Neow::Drawback::INVALID)
+        .value("NONE", Neow::Drawback::NONE)
+        .value("TEN_PERCENT_HP_LOSS", Neow::Drawback::TEN_PERCENT_HP_LOSS)
+        .value("NO_GOLD", Neow::Drawback::NO_GOLD)
+        .value("CURSE", Neow::Drawback::CURSE)
+        .value("PERCENT_DAMAGE", Neow::Drawback::PERCENT_DAMAGE)
+        .value("LOSE_STARTER_RELIC", Neow::Drawback::LOSE_STARTER_RELIC);
+
+    pybind11::class_<Neow::Option> neowOption(m, "NeowOption");
+    neowOption.def_readonly("bonus", &Neow::Option::r)
+        .def_readonly("drawback", &Neow::Option::d)
+        .def_property_readonly("bonus_text",
+            [](const Neow::Option &o) { return std::string(Neow::bonusStrings[static_cast<int>(o.r)]); })
+        .def_property_readonly("drawback_text",
+            [](const Neow::Option &o) { return std::string(Neow::drawbackStrings[static_cast<int>(o.d)]); })
+        .def("__repr__", [](const Neow::Option &o) {
+            std::string s("<slaythespire.NeowOption ");
+            s += Neow::bonusStrings[static_cast<int>(o.r)];
+            const auto d = Neow::drawbackStrings[static_cast<int>(o.d)];
+            if (*d) {
+                s += " / ";
+                s += d;
+            }
+            return s += ">";
+        });
 
     pybind11::enum_<CardRarity>(m, "CardRarity")
         .value("COMMON", CardRarity::COMMON)
