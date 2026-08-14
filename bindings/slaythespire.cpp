@@ -132,6 +132,90 @@ PYBIND11_MODULE(slaythespire, m) {
             },
             "the four Neow options; only meaningful while the NEOW event screen is active"
         )
+        .def_property_readonly("rewards_container",
+            [](const GameContext &gc) {
+                const auto &r = gc.info.rewardsContainer;
+                pybind11::dict d;
+
+                pybind11::list gold;
+                for (int i = 0; i < r.goldRewardCount; ++i) {
+                    gold.append(r.gold[i]);
+                }
+                d["gold"] = gold;
+
+                // one entry per card-reward bundle (GameAction idx1), each a
+                // list of the cards on offer in it (idx2)
+                pybind11::list cards;
+                for (int i = 0; i < r.cardRewardCount; ++i) {
+                    const auto &bundle = r.cardRewards[i];
+                    cards.append(std::vector<Card>(bundle.begin(), bundle.end()));
+                }
+                d["cards"] = cards;
+
+                pybind11::list relics;
+                for (int i = 0; i < r.relicCount; ++i) {
+                    relics.append(r.relics[i]);
+                }
+                d["relics"] = relics;
+
+                pybind11::list potions;
+                for (int i = 0; i < r.potionCount; ++i) {
+                    potions.append(r.potions[i]);
+                }
+                d["potions"] = potions;
+
+                d["emerald_key"] = r.emeraldKey;
+                d["sapphire_key"] = r.sapphireKey;
+                return d;
+            },
+            "pending rewards while screen_state == REWARDS: keys gold, cards "
+            "(list of bundles), relics, potions, emerald_key, sapphire_key. "
+            "List positions line up with GameAction idx1 (and idx2 for cards)"
+        )
+        .def_property_readonly("shop",
+            [](const GameContext &gc) {
+                const auto &s = gc.info.shop;
+                pybind11::dict d;
+
+                // a price of -1 means the slot is empty / already bought
+                pybind11::list cards, cardPrices;
+                for (int i = 0; i < 7; ++i) {
+                    cards.append(s.cards[i]);
+                    cardPrices.append(s.cardPrice(i));
+                }
+                d["cards"] = cards;
+                d["card_prices"] = cardPrices;
+
+                pybind11::list relics, relicPrices;
+                for (int i = 0; i < 3; ++i) {
+                    relics.append(s.relics[i]);
+                    relicPrices.append(s.relicPrice(i));
+                }
+                d["relics"] = relics;
+                d["relic_prices"] = relicPrices;
+
+                pybind11::list potions, potionPrices;
+                for (int i = 0; i < 3; ++i) {
+                    potions.append(s.potions[i]);
+                    potionPrices.append(s.potionPrice(i));
+                }
+                d["potions"] = potions;
+                d["potion_prices"] = potionPrices;
+
+                d["remove_cost"] = s.removeCost;
+                return d;
+            },
+            "shop stock while screen_state == SHOP_ROOM: cards/relics/potions "
+            "plus the matching *_prices (-1 = empty slot) and remove_cost. "
+            "List positions line up with GameAction idx1"
+        )
+        .def_property_readonly("boss_relics",
+            [](const GameContext &gc) {
+                return std::vector<RelicId>(gc.info.bossRelics, gc.info.bossRelics + 3);
+            },
+            "the three boss relics on offer; only meaningful while "
+            "screen_state == BOSS_RELIC_REWARDS"
+        )
         .def_readwrite("boss", &GameContext::boss)
 
         .def_readwrite("cur_hp", &GameContext::curHp)
